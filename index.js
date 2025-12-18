@@ -6,15 +6,13 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 let cache = null;
-let loading = true;
+let loading = false;
 let lastError = null;
 
 function getChromiumPath() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
   try {
-    return execSync("which chromium").toString().trim();
+    return process.env.PUPPETEER_EXECUTABLE_PATH
+      || execSync("which chromium").toString().trim();
   } catch {
     return puppeteer.executablePath();
   }
@@ -23,49 +21,38 @@ function getChromiumPath() {
 async function fetchData() {
   loading = true;
   lastError = null;
-  let browser = null;
-  
-  console.log("Fetching live data...");
+  let browser;
 
   try {
     browser = await puppeteer.launch({
       headless: "new",
       executablePath: getChromiumPath(),
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+      args: ["--no-sandbox","--disable-setuid-sandbox"]
     });
 
     const page = await browser.newPage();
-
-    await page.setViewport({
-      width: 390,
-      height: 844,
-      deviceScaleFactor: 2
-    });
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
 
     await page.goto("http://anjujewellery.in/", {
       waitUntil: "networkidle2",
       timeout: 60000
     });
 
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    await page.waitForTimeout(5000);
 
     const data = await page.evaluate(() => {
 
-      function getBox(title) {
-        const headers = Array.from(document.querySelectorAll("div"))
-          .filter(d => d.innerText && d.innerText.includes(title));
+      function parseBox(title){
+        const box = [...document.querySelectorAll("h4,h3,div")]
+          .find(e => e.innerText?.includes(title));
+        if(!box) return null;
 
-        if (!headers.length) return null;
+        const parent = box.closest("div");
+        const spans = parent?.querySelectorAll("span") || [];
 
-        const box = headers[0].closest("div");
-
-        if (!box) return null;
-
-        const spans = box.querySelectorAll("span");
-
-        const nums = Array.from(spans)
-          .map(s => s.innerText.trim())
-          .filter(v => /^[0-9]/.test(v));
+        const nums = [...spans]
+          .map(s => s.innerText.replace(/[^\d.]/g,""))
+          .filter(Boolean);
 
         return {
           bid: nums[0] || null,
@@ -75,69 +62,75 @@ async function fetchData() {
         };
       }
 
+      function parseTables(){
+        return [...document.querySelectorAll("table")].map(t=>{
+          const html = t.outerHTML;
+          let type = "unknown";
+
+          if(html.includes("RTGS")) type = "rtgs";
+          if(html.includes("Retail")) type = "retail";
+
+          return { type, html };
+        });
+      }
+
+      function parseDirection(){
+        return [...document.querySelectorAll(".bgm")].map(e=>{
+          return {
+            value: e.innerText.trim(),
+            dir: e.classList.contains("l") ? "up"
+               : e.classList.contains("e") ? "down"
+               : "same"
+          };
+        });
+      }
+
       return {
-        spots: {
-          gold: getBox("GOLD SPOT"),
-          silver: getBox("SILVER SPOT"),
-          inr: getBox("INR SPOT")
+        spots:{
+          gold: parseBox("GOLD SPOT"),
+          silver: parseBox("SILVER SPOT"),
+          inr: parseBox("INR SPOT")
         },
-        futures: {
-          gold: getBox("GOLD FUTURE"),
-          silver: getBox("SILVER FUTURE")
+        futures:{
+          gold: parseBox("GOLD FUTURE"),
+          silver: parseBox("SILVER FUTURE")
         },
-        next: {
-          gold: getBox("GOLD NEXT"),
-          silver: getBox("SILVER NEXT")
+        next:{
+          gold: parseBox("GOLD NEXT"),
+          silver: parseBox("SILVER NEXT")
         },
-        tables: Array.from(document.querySelectorAll("table"))
-          .map(t => t.outerHTML)
+        tables: parseTables(),
+        movement: parseDirection()
       };
     });
 
     cache = data;
-    console.log("Data updated");
-  } catch (error) {
-    console.error("Error fetching data:", error.message);
-    lastError = error.message;
+  } catch (e) {
+    lastError = e.message;
   } finally {
     loading = false;
-    if (browser) {
-      try {
-        await browser.close();
-      } catch (e) {
-        console.error("Error closing browser:", e.message);
-      }
-    }
+    if(browser) await browser.close();
   }
 }
 
-async function startScheduler() {
-  while (true) {
+async function scheduler(){
+  while(true){
     await fetchData();
-    await new Promise(resolve => setTimeout(resolve, 10000));
+    await new Promise(r=>setTimeout(r,10000));
   }
 }
+scheduler();
 
-startScheduler();
+/* ================= API ================= */
 
-app.get("/", (req, res) => {
-  res.send("Ambica Live Server OK");
+app.get("/",(_,res)=>res.send("Ambica Live Server OK"));
+
+app.get("/data",(req,res)=>{
+  if(loading) return res.json({status:"loading"});
+  if(!cache) return res.json({status:"error",error:lastError});
+  res.json({status:"ok",data:cache});
 });
 
-app.get("/data", (req, res) => {
-  if (loading) {
-    return res.json({ status: "loading" });
-  }
-  if (!cache && lastError) {
-    return res.json({ status: "error", error: lastError });
-  }
-  if (!cache) {
-    return res.json({ status: "loading" });
-  }
-  res.json({ status: "ok", data: cache });
+app.listen(PORT,"0.0.0.0",()=>{
+  console.log("Server running on",PORT);
 });
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("Server running on", PORT);
-});
-  
