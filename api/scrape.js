@@ -1,15 +1,18 @@
 const puppeteer = require("puppeteer");
 
 module.exports = async (req, res) => {
-  let browser = null;
+  let browser;
 
   try {
     browser = await puppeteer.launch({
-      headless: "new",
+      headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+        "--single-process"
       ]
     });
 
@@ -69,10 +72,10 @@ module.exports = async (req, res) => {
       data
     });
 
-  } catch (err) {
+  } catch (e) {
     res.json({
       status: "error",
-      error: err.message
+      message: e.message
     });
 
   } finally {
